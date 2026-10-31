@@ -1,3 +1,27 @@
+#!/usr/bin/env python3
+"""ult2s4.py - port Smash Ultimate animations back to Smash 4 (the reverse of JoshuaSawagi's S4-Anims-to-Ult).
+
+Input : Ultimate animations exported from StudioSB as Maya .anim (one file per animation, all bones),
+        the Smash 4 character's model.vbn, and the character's Smash 4 motion .pac files (main, lhand, rhand, swing pacs).
+Output: copies of the .pac files with the chosen animations replaced by converted .omo files (ready to put in the
+        workspace), plus the loose .omo files.
+
+What it does per animation:
+  * renames Ultimate bones to Smash 4 names (reverse of the S4->Ult tool's table, + Peach/Daisy extras);
+  * removes Ultimate's extra ClavicleC / LegC bones by folding their transform into the shoulder / leg bones
+    (Smash 4 LShoulderN = ClavicleC * ClavicleL, LLegJ = LegC * LegL);
+  * takes key frames 1..N (StudioSB's endTime is N+1), the same frame count Smash 4 uses for the same move;
+  * writes each .pac's .omo with exactly the bones that .pac's stock .omo animates (body -> main.pac,
+    fingers -> lhand/rhand.pac, swing bones -> the character's swing pacs);
+  * bones whose Ultimate rig differs from Smash 4 (e.g. Peach/Daisy skirt) get Ultimate's rotations on Smash 4's
+    own bone lengths (approximate); face bones are skipped (Smash 4 body animations don't key them).
+Rotations: .anim euler radians, R = Rz*Ry*Rx (checked against stock Smash 4 Peach animations).
+
+usage: python ult2s4.py --vbn model.vbn --pacs <dir with main.pac etc> --out <dir> \
+          --prefix FitPeachBody a00wait1.anim[=A00Wait1] a02run.anim ...
+
+Single-file version: needs only Python 3 + numpy (pip install numpy).
+"""
 import sys, os, re, struct, argparse, numpy as np
 
 # ---------------- Smash 4 formats: VBN skeleton, PAC archive, OMO reader ----------------
@@ -268,12 +292,41 @@ def convert(anim_path, vbn, stock_omos):
             Tp,Rp,Sp=tracks(A,FOLD[u],frames)
             T=Tp+qrot(Rp,T*Sp); R=qmul(Rp,R); S=Sp*S
         if u in ROT_ONLY: T=np.tile(b['pos'],(F,1))   # different rig: keep Smash 4 bone lengths
-        out[b['id']]=dict(id=b['id'],pos=T,rot=R,sca=S,name=b['name'])
+        out[b['id']]=dict(id=b['id'],pos=T,rot=R,sca=S,name=b['name'],rot_only=u in ROT_ONLY)
     return out,F
+
+def qmean(Q):
+    Q=np.asarray(Q,float); Q=Q/np.linalg.norm(Q,axis=1,keepdims=True)
+    w,v=np.linalg.eigh(Q.T@Q); return v[:,-1]
+def qang(a,b):
+    a=a/np.linalg.norm(a,axis=-1,keepdims=True); b=b/np.linalg.norm(b,axis=-1,keepdims=True)
+    return np.degrees(2*np.arccos(np.clip(np.abs((a*b).sum(-1)),0,1)))
+LEG_BONES=('HipN','LLegJ','LKneeJ','LFootJ','RLegJ','RKneeJ','RFootJ')
+def legs_match(conv,F,stock_main,sf,vbn,tol=8.0):
+    """True when the converted legs move like the stock Smash 4 motion (same length, mean leg-bone difference < tol degrees)"""
+    if F!=sf: return False, None
+    ids={b['name']:b['id'] for b in vbn}; d=[]
+    for n in LEG_BONES:
+        h=ids.get(n)
+        if h in conv and h in stock_main: d.append(qang(conv[h]['rot'],stock_main[h]['rot']).mean())
+    if not d: return False, None
+    return float(np.mean(d))<tol, float(np.mean(d))
+def swing_fix(node,stock_node,F,mode):
+    """Re-base a rebuilt-rig swing bone (e.g. skirt). 'stock' = Smash 4's own motion; 'anchored' = Ultimate's sway
+    around Smash 4's average pose for this move instead of Ultimate's; 'ult' = Ultimate's rotations as they are."""
+    if mode=='stock':
+        return dict(id=node['id'],pos=stock_node['pos'],rot=stock_node['rot'],sca=stock_node['sca'])
+    if mode=='anchored':
+        base=qmean(stock_node['rot']); m=qmean(node['rot']); minv=m*np.array([-1,-1,-1,1])
+        delta=qmul(np.tile(minv,(F,1)),node['rot']); R=qmul(np.tile(base,(F,1)),delta)
+        return dict(id=node['id'],pos=node['pos'],rot=R,sca=node['sca'])
+    return node
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('--vbn',required=True); ap.add_argument('--pacs',required=True)
     ap.add_argument('--out',required=True); ap.add_argument('--prefix',default=None,help='e.g. FitPeachBody (auto from main.pac)')
+    ap.add_argument('--skirt',choices=['auto','stock','anchored','ult'],default='auto',
+        help="rebuilt-rig swing bones (Peach/Daisy skirt): auto = Smash 4's own skirt motion when the legs match the stock move, else anchored")
     ap.add_argument('anims',nargs='+',help='file.anim or file.anim=MotionName (default: name from the file, a00wait1 -> A00Wait1)')
     a=ap.parse_args()
     vbn=read_vbn(a.vbn); os.makedirs(a.out,exist_ok=True)
@@ -288,11 +341,19 @@ def main():
             b=os.path.splitext(os.path.basename(path))[0]; m=re.match(r'([a-z])(\d+)(.*)',b)
             mname=m.group(1).upper()+m.group(2)+m.group(3)[:1].upper()+m.group(3)[1:]
         conv,F=convert(path,vbn,None)
+        mk=[k for k in main if k.lower()==('%sMain%s.omo'%(prefix,mname)).lower()]
+        mode=a.skirt; note=''
+        if mode=='auto':
+            ok,dev=legs_match(conv,F,*read_omo(main[mk[0]]),vbn) if mk else (False,None)
+            mode='stock' if ok else 'anchored'
+            note=' (legs %s stock%s)'%('match' if ok else 'differ from', '' if dev is None else ', %.1f deg'%dev)
+        report.append('%s: skirt = %s%s'%(mname,mode,note))
         for pk,(files,E) in pacs.items():
             key=[k for k in files if k.lower()==('%s%s%s.omo'%(prefix,pk.capitalize(),mname)).lower()]
             if not key: report.append('%s: %s.pac has no %s - skipped'%(mname,pk,mname)); continue
             stock,sf=read_omo(files[key[0]])
-            nodes=[conv[h] for h in stock if h in conv]
+            nodes=[swing_fix(conv[h],stock[h],F,mode) if conv[h].get('rot_only') else conv[h] for h in stock if h in conv]
+            if mode=='stock' and F!=sf: raise SystemExit('--skirt stock needs the same frame count as the stock motion (%s: %d vs %d)'%(mname,F,sf))
             missing=[h for h in stock if h not in conv]
             # bones the stock .omo animates but Ultimate doesn't have: keep the stock motion, stretched to the new length
             t=np.linspace(0,sf-1,F)
