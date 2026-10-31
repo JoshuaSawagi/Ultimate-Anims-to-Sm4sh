@@ -1,0 +1,42 @@
+A00Wait1: skirt = anchored (legs differ from stock)
+A00Wait1: lhand.pac FitPeachBodyLhandA00Wait1.omo  236 frames (stock 101), 19 bones, 0 kept from stock
+A00Wait1: main.pac FitPeachBodyMainA00Wait1.omo  236 frames (stock 101), 26 bones, 0 kept from stock
+A00Wait1: peachsw1.pac FitPeachBodyPeachsw1A00Wait1.omo  236 frames (stock 101), 32 bones, 0 kept from stock
+A00Wait1: peachsw2.pac FitPeachBodyPeachsw2A00Wait1.omo  236 frames (stock 101), 3 bones, 0 kept from stock
+A00Wait1: rhand.pac FitPeachBodyRhandA00Wait1.omo  236 frames (stock 101), 19 bones, 0 kept from stock
+A00Wait2: skirt = anchored (legs differ from stock)
+A00Wait2: lhand.pac FitPeachBodyLhandA00Wait2.omo  94 frames (stock 240), 19 bones, 0 kept from stock
+A00Wait2: main.pac FitPeachBodyMainA00Wait2.omo  94 frames (stock 240), 26 bones, 0 kept from stock
+A00Wait2: peachsw1.pac FitPeachBodyPeachsw1A00Wait2.omo  94 frames (stock 240), 32 bones, 0 kept from stock
+A00Wait2: peachsw2.pac FitPeachBodyPeachsw2A00Wait2.omo  94 frames (stock 240), 3 bones, 0 kept from stock
+A00Wait2: rhand.pac FitPeachBodyRhandA00Wait2.omo  94 frames (stock 240), 19 bones, 0 kept from stock
+A00Wait3: skirt = anchored (legs differ from stock)
+A00Wait3: lhand.pac FitPeachBodyLhandA00Wait3.omo  130 frames (stock 270), 19 bones, 0 kept from stock
+A00Wait3: main.pac FitPeachBodyMainA00Wait3.omo  130 frames (stock 270), 26 bones, 0 kept from stock
+A00Wait3: peachsw1.pac FitPeachBodyPeachsw1A00Wait3.omo  130 frames (stock 270), 32 bones, 0 kept from stock
+A00Wait3: peachsw2.pac FitPeachBodyPeachsw2A00Wait3.omo  130 frames (stock 270), 3 bones, 0 kept from stock
+A00Wait3: rhand.pac FitPeachBodyRhandA00Wait3.omo  130 frames (stock 270), 19 bones, 0 kept from stock
+A00Wait4: skirt = anchored (legs differ from stock)
+A00Wait4: lhand.pac FitPeachBodyLhandA00Wait4.omo  94 frames (stock 190), 19 bones, 0 kept from stock
+A00Wait4: main.pac FitPeachBodyMainA00Wait4.omo  94 frames (stock 190), 26 bones, 0 kept from stock
+A00Wait4: peachsw1.pac FitPeachBodyPeachsw1A00Wait4.omo  94 frames (stock 190), 32 bones, 0 kept from stock
+A00Wait4: peachsw2.pac FitPeachBodyPeachsw2A00Wait4.omo  94 frames (stock 190), 3 bones, 0 kept from stock
+A00Wait4: rhand.pac FitPeachBodyRhandA00Wait4.omo  94 frames (stock 190), 19 bones, 0 kept from stock
+A00Wait5: skirt = anchored (legs differ from stock)
+A00Wait5: lhand.pac FitPeachBodyLhandA00Wait5.omo  130 frames (stock 125), 19 bones, 0 kept from stock
+A00Wait5: main.pac FitPeachBodyMainA00Wait5.omo  130 frames (stock 125), 26 bones, 0 kept from stock
+A00Wait5: peachsw1.pac FitPeachBodyPeachsw1A00Wait5.omo  130 frames (stock 125), 32 bones, 0 kept from stock
+A00Wait5: peachsw2.pac FitPeachBodyPeachsw2A00Wait5.omo  130 frames (stock 125), 3 bones, 0 kept from stock
+A00Wait5: rhand.pac FitPeachBodyRhandA00Wait5.omo  130 frames (stock 125), 19 bones, 0 kept from stock
+A02Dash: skirt = stock (legs match stock, 1.4 deg)
+A02Dash: lhand.pac FitPeachBodyLhandA02Dash.omo  35 frames (stock 35), 19 bones, 0 kept from stock
+A02Dash: main.pac FitPeachBodyMainA02Dash.omo  35 frames (stock 35), 34 bones, 8 kept from stock
+A02Dash: peachsw1.pac FitPeachBodyPeachsw1A02Dash.omo  35 frames (stock 35), 32 bones, 0 kept from stock
+A02Dash: peachsw2.pac FitPeachBodyPeachsw2A02Dash.omo  35 frames (stock 35), 3 bones, 0 kept from stock
+A02Dash: rhand.pac FitPeachBodyRhandA02Dash.omo  35 frames (stock 35), 19 bones, 0 kept from stock
+A02Run: skirt = stock (legs match stock, 3.7 deg)
+A02Run: lhand.pac FitPeachBodyLhandA02Run.omo  33 frames (stock 33), 19 bones, 0 kept from stock
+A02Run: main.pac FitPeachBodyMainA02Run.omo  33 frames (stock 33), 34 bones, 8 kept from stock
+A02Run: peachsw1.pac FitPeachBodyPeachsw1A02Run.omo  33 frames (stock 33), 32 bones, 0 kept from stock
+A02Run: peachsw2.pac FitPeachBodyPeachsw2A02Run.omo  33 frames (stock 33), 3 bones, 0 kept from stock
+A02Run: rhand.pac FitPeachBodyRhandA02Run.omo  33 frames (stock 33), 19 bones, 0 kept from stock
