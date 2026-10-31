@@ -31,7 +31,8 @@ THEMES = {
 }
 
 SKIRT_MODES = [("auto (recommended)", "auto"), ("stock - Smash 4's own skirt", "stock"),
-               ("anchored - Ultimate sway on Smash 4 shape", "anchored"), ("ult - Ultimate skirt as is", "ult")]
+               ("anchored - Ultimate sway on Smash 4 shape", "anchored"),
+               ("neutral - still dress, pushed out by the legs", "neutral"), ("ult - Ultimate skirt as is", "ult")]
 
 
 def default_motion(path):
@@ -57,10 +58,15 @@ class App(tk.Tk):
         top.pack(fill="x", **pad)
         self.vbn = tk.StringVar(value=s.get("vbn", ""))
         self.pacs = tk.StringVar(value=s.get("pacs", ""))
+        self.stock = tk.StringVar(value=s.get("stock", ""))
         self.out = tk.StringVar(value=s.get("out", os.path.join(HERE, "out")))
         self.row(top, 0, "Skeleton (model.vbn)", self.vbn, self.pick_vbn)
         self.row(top, 1, "Motion folder (.pac files)", self.pacs, self.pick_pacs)
-        self.row(top, 2, "Output folder", self.out, self.pick_out)
+        self.row(top, 2, "Stock reference (optional)", self.stock, self.pick_stock)
+        self.row(top, 3, "Output folder", self.out, self.pick_out)
+        ttk.Label(top, text="Stock reference = a folder with the fighter's untouched original .pac files. Set it once your motion "
+                  "folder already has converted moves, so the skirt is always judged against the real Smash 4 dress.",
+                  wraplength=760, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 4))
         top.columnconfigure(1, weight=1)
 
         mid = ttk.LabelFrame(self, text="Ultimate animations (.anim)  -  double-click a row to change its target slot")
@@ -242,7 +248,7 @@ class App(tk.Tk):
     def save_settings(self):
         try:
             with open(SETTINGS, "w") as f:
-                json.dump(dict(vbn=self.vbn.get(), pacs=self.pacs.get(), out=self.out.get(),
+                json.dump(dict(vbn=self.vbn.get(), pacs=self.pacs.get(), stock=self.stock.get(), out=self.out.get(),
                                skirt=dict(SKIRT_MODES)[self.skirt.get()], pushout=self.pushout.get(),
                                theme=self.theme.get(), accent=self.accent,
                                anims=[self.tree.item(i, "values") for i in self.tree.get_children()]), f, indent=1)
@@ -273,6 +279,11 @@ class App(tk.Tk):
         if p:
             self.pacs.set(os.path.normpath(p))
             self.refresh_motions()
+
+    def pick_stock(self):
+        p = filedialog.askdirectory(title="Folder with the fighter's untouched stock .pac files (main.pac, peachsw1.pac ...)")
+        if p:
+            self.stock.set(os.path.normpath(p))
 
     def pick_out(self):
         p = filedialog.askdirectory(title="Output folder")
@@ -342,6 +353,8 @@ class App(tk.Tk):
             return "The motion folder must contain main.pac (and the fighter's other .pac files)."
         if not self.tree.get_children():
             return "Add at least one .anim file."
+        if self.stock.get().strip() and not os.path.isfile(os.path.join(self.stock.get().strip(), "main.pac")):
+            return "The stock reference folder must contain the original main.pac (or leave it empty)."
         if os.path.normcase(os.path.abspath(self.out.get())) == os.path.normcase(os.path.abspath(self.pacs.get())):
             return "Use an output folder different from the motion folder (then use Install)."
         if self.motions:
@@ -361,6 +374,8 @@ class App(tk.Tk):
             return
         argv = ["ult2s4.py", "--vbn", self.vbn.get(), "--pacs", self.pacs.get(), "--out", self.out.get(),
                 "--skirt", dict(SKIRT_MODES)[self.skirt.get()]]
+        if self.stock.get().strip():
+            argv += ["--stock", self.stock.get().strip()]
         if not self.pushout.get():
             argv.append("--no-pushout")
         argv += ["%s=%s" % (p, m) for p, m in (self.tree.item(i, "values") for i in self.tree.get_children())]

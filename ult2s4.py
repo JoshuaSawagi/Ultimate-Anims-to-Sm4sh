@@ -311,11 +311,22 @@ def legs_match(conv,F,stock_main,sf,vbn,tol=8.0):
         if h in conv and h in stock_main: d.append(qang(conv[h]['rot'],stock_main[h]['rot']).mean())
     if not d: return False, None
     return float(np.mean(d))<tol, float(np.mean(d))
+def legs_similarity(conv,F,stock_main,sf,vbn):
+    """mean angle (deg) between converted and stock leg/hip rotations, stock time-stretched to F frames"""
+    ids={b['name']:b['id'] for b in vbn}; t=np.linspace(0,max(sf-1,0),F); d=[]
+    for n in ('HipN','LLegJ','RLegJ','LKneeJ','RKneeJ'):
+        h=ids.get(n)
+        if h in conv and h in stock_main:
+            qb=np.stack([np.interp(t,np.arange(sf),stock_main[h]['rot'][:,c]) for c in range(4)],-1)
+            d.append(qang(conv[h]['rot'],qb).mean())
+    return float(np.mean(d)) if d else 999.0
 def swing_fix(node,stock_node,F,mode):
     """Re-base a rebuilt-rig swing bone (e.g. skirt). 'stock' = Smash 4's own motion; 'anchored' = Ultimate's sway
     around Smash 4's average pose for this move instead of Ultimate's; 'ult' = Ultimate's rotations as they are."""
     if mode=='stock':
         return dict(id=node['id'],pos=stock_node['pos'],rot=stock_node['rot'],sca=stock_node['sca'])
+    if mode=='neutral':   # Smash 4's average dress pose for the reference move, held still (push-out adds the movement)
+        return dict(id=node['id'],pos=node['pos'],rot=np.tile(qmean(stock_node['rot']),(F,1)),sca=node['sca'])
     if mode=='anchored':
         base=qmean(stock_node['rot']); m=qmean(node['rot']); minv=m*np.array([-1,-1,-1,1])
         delta=qmul(np.tile(minv,(F,1)),node['rot']); R=qmul(np.tile(base,(F,1)),delta)
@@ -371,12 +382,55 @@ def _skirt_excess(vbn,locq,loct,F):
             e=np.maximum(np.where(between&np.isfinite(rr),pn+r-rr,0.0),0)
             worst=np.maximum(worst,e); need[s]=np.maximum(need[s],e); need[s2]=np.maximum(need[s2],e)
     return need,worst,poly
-def skirt_pushout(vbn,locq,loct,F,iters=8,gain=1.3,smooth=2):
-    """returns new top-panel rotations {SWG_xSkirt0__swing: (F,4)} and the remaining worst poke-through per frame"""
+def _hem_x(vbn,locq,s,F):
+    idx={b['name']:i for i,b in enumerate(vbn)}; R=np.tile(np.eye(3),(F,1,1)); p=np.zeros((F,3)); P=[]
+    for i in range(4):
+        b=vbn[idx['SWG_%sSkirt%d__swing'%(s,i)]]; p=p+np.einsum('fij,j->fi',R,b['pos']); R=R@q2m(locq[b['name']]); P.append(p)
+    return (P[3]+(P[3]-P[2]))[:,0]            # hip-space X of the hem (higher = less negative)
+def _scale_rot(q,k):   # rotation q (F,4) shrunk to fraction k (F,) of its angle
+    q=np.where(q[:,3:4]<0,-q,q); ang=2*np.arccos(np.clip(q[:,3],-1,1))
+    ax=q[:,:3]/np.maximum(np.linalg.norm(q[:,:3],axis=1,keepdims=True),1e-12); a=ang*k
+    return np.concatenate([ax*np.sin(a/2)[:,None],np.cos(a/2)[:,None]],1)
+def limit_sway(vbn,locq,F,base,hem_cap,steps=12):
+    """shrink each strand's sway (all four panels, relative to the reference dress pose `base`: name->(4,)) frame by frame
+    just enough that the hem never rises above hem_cap. Returns {bone name: (F,4)} and {strand: kept fraction (F,)}"""
+    out={}; kept={}
+    for s in SK_STRANDS:
+        ns=['SWG_%sSkirt%d__swing'%(s,i) for i in range(4)]
+        dl={n:qmul(np.tile((base[n]*np.array([-1,-1,-1,1]))[None],(F,1)),locq[n]) for n in ns}
+        tmp=dict(locq)
+        def hem(k):
+            for n in ns: tmp[n]=qmul(np.tile(base[n][None],(F,1)),_scale_rot(dl[n],k))
+            return _hem_x(vbn,tmp,s,F)
+        lo=np.zeros(F); hi=np.ones(F); ok=hem(hi)<=hem_cap[s]
+        if not ok.all():
+            for _ in range(steps):
+                mid=np.where(ok,hi,(lo+hi)/2); good=hem(mid)<=hem_cap[s]
+                lo=np.where(~ok&good,mid,lo); hi=np.where(~ok&~good,mid,hi)
+            hi=np.where(ok,1.0,lo)
+            hem(hi); out.update({n:tmp[n] for n in ns})
+        kept[s]=hi
+    return out,kept
+def skirt_pushout(vbn,locq,loct,F,iters=8,gain=1.3,smooth=2,tol=None,max_deg=35.0,max_rise=1.0,below_knee=False,hem_cap=None):
+    """returns new top-panel rotations {SWG_xSkirt0__swing: (F,4)} and the remaining worst poke-through per frame.
+    tol: per-strand overlap to leave alone (what the stock Smash 4 move already has); max_deg caps the total swing."""
     locq=dict(locq); down=np.array([-1.,0,0])
+    base={('SWG_%sSkirt0__swing'%s):locq['SWG_%sSkirt0__swing'%s] for s in SK_STRANDS}
+    hem0={s:_hem_x(vbn,locq,s,F) for s in SK_STRANDS}     # the push may lift the hem at most max_rise above this
+    if below_knee:                                          # ...or up to just under the knees, whichever is higher
+        g=_hipspace(vbn,locq,loct,F); knee=np.minimum(g('LKneeJ')[1][:,0],g('RKneeJ')[1][:,0])-0.75
+        # never above hem_cap: the highest hem the Smash 4 reference skirt reaches (or 2.5 below the hips), so raised
+        # knees (splits, kicks) can't flip the panels up
+        lim={s:np.maximum(hem0[s]+max_rise,np.minimum(knee,hem_cap[s] if hem_cap else -2.5)) for s in SK_STRANDS}
+        if hem_cap:   # and the push itself never lifts the hem past hem_cap (only an already-higher start stays where it is)
+            lim={s:np.minimum(lim[s],np.maximum(hem_cap[s],hem0[s])) for s in SK_STRANDS}
+    else: lim={s:hem0[s]+max_rise for s in SK_STRANDS}
+    cap=np.radians(max_deg)
     for _ in range(iters):
         need,worst,poly=_skirt_excess(vbn,locq,loct,F)
         if worst.max()<1e-3: break
+        if tol is not None: need={s:np.maximum(need[s]-tol[s],0) for s in SK_STRANDS}
+        if max(need[s].max() for s in SK_STRANDS)<1e-3: break
         for s in SK_STRANDS:
             e=need[s]
             if e.max()<=0: continue
@@ -387,23 +441,68 @@ def skirt_pushout(vbn,locq,loct,F,iters=8,gain=1.3,smooth=2):
             u=np.concatenate([np.zeros((F,1)),P[:,3,1:]],1); u/=np.linalg.norm(u,axis=1,keepdims=True)
             ax=np.cross(down,u); h=np.sin(d/2)[:,None]
             R=np.concatenate([ax*h,np.cos(d/2)[:,None]],1)                                    # hip-space swing outward
-            n='SWG_%sSkirt0__swing'%s; locq[n]=qmul(R,locq[n])
+            n='SWG_%sSkirt0__swing'%s; q=qmul(R,locq[n])
+            # cap the total swing away from the starting pose
+            b=base[n]; binv=b*np.array([-1,-1,-1,1]); D=qmul(q,binv); D=np.where(D[:,3:4]<0,-D,D)
+            ang=2*np.arccos(np.clip(D[:,3],-1,1)); k=np.where(ang>cap,cap/np.maximum(ang,1e-9),1.0)
+            axv=D[:,:3]/np.maximum(np.linalg.norm(D[:,:3],axis=1,keepdims=True),1e-12); a2=ang*k
+            def at(f):   # rotation at fraction f of the allowed swing
+                a3=a2*f; return qmul(np.concatenate([axv*np.sin(a3/2)[:,None],np.cos(a3/2)[:,None]],1),b)
+            lo=np.zeros(F); hi=np.ones(F)
+            q1=at(hi); tmp=dict(locq); tmp[n]=q1; ok=_hem_x(vbn,tmp,s,F)<=lim[s]
+            if not ok.all():                    # shrink the swing per frame until the hem stays low enough
+                for _ in range(10):
+                    mid=np.where(ok,hi,(lo+hi)/2); tmp[n]=at(mid); good=_hem_x(vbn,tmp,s,F)<=lim[s]
+                    lo=np.where(~ok&good,mid,lo); hi=np.where(~ok&~good,mid,hi)
+                hi=np.where(ok,1.0,lo)
+            locq[n]=at(hi)
     need,worst,_=_skirt_excess(vbn,locq,loct,F)
+    if tol is not None: worst=np.max([np.maximum(need[s]-tol[s],0) for s in SK_STRANDS],axis=0)
     return {('SWG_%sSkirt0__swing'%s):locq['SWG_%sSkirt0__swing'%s] for s in SK_STRANDS}, worst
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('--vbn',required=True); ap.add_argument('--pacs',required=True)
     ap.add_argument('--out',required=True); ap.add_argument('--prefix',default=None,help='e.g. FitPeachBody (auto from main.pac)')
-    ap.add_argument('--skirt',choices=['auto','stock','anchored','ult'],default='auto',
-        help="rebuilt-rig swing bones (Peach/Daisy skirt): auto = Smash 4's own skirt when the legs match the stock move; Smash 4's skirt + push-out when only the legs differ; anchored + push-out when the length differs")
+    ap.add_argument('--skirt',choices=['auto','stock','anchored','neutral','ult'],default='auto',
+        help="rebuilt-rig swing bones (Peach/Daisy skirt): auto = Smash 4's own skirt when the legs match the stock move; Smash 4's skirt + push-out when only the legs differ; anchored + push-out when the length differs; "
+        "neutral (still dress + push-out) when Ultimate's baked skirt keys are jumpy (its skirt is physics-driven in game)")
+    ap.add_argument('--stock',default=None,help="folder with the fighter's untouched stock .pac files, used as the skirt/leg reference "
+        "(default: --pacs). Set it when --pacs already holds converted animations")
     ap.add_argument('--no-pushout',action='store_true',help="don't swing skirt panels out where legs would poke through")
     ap.add_argument('anims',nargs='+',help='file.anim or file.anim=MotionName (default: name from the file, a00wait1 -> A00Wait1)')
     a=ap.parse_args()
-    vbn=read_vbn(a.vbn); os.makedirs(a.out,exist_ok=True)
+    vbn=read_vbn(a.vbn); os.makedirs(a.out,exist_ok=True); nm={b['id']:b['name'] for b in vbn}
     pacs={}
     for f in sorted(os.listdir(a.pacs)):
         if f.endswith('.pac'): pacs[f[:-4]]=read_pac(os.path.join(a.pacs,f))
     main=pacs['main'][0]; prefix=a.prefix or re.match(r'(Fit\w+?Body)Main',next(iter(main))).group(1)
+    ref={}                                    # untouched reference .pacs (never modified below)
+    rdir=a.stock or a.pacs
+    for f in sorted(os.listdir(rdir)):
+        if f.endswith('.pac'): ref[f[:-4]]=read_pac(os.path.join(rdir,f))[0]
+    def ref_omo(pk,motion,R=None):
+        files=(ref if R is None else R).get(pk,{}); key=[k for k in files if k.lower()==('%s%s%s.omo'%(prefix,pk.capitalize(),motion)).lower()]
+        return read_omo(files[key[0]]) if key else (None,0)
+    def ref_motion(motion,R=None):
+        """all reference bones for a motion, every file resampled to the length of its main.pac entry (Smash 4's
+        hair/face files can be longer or shorter than the body, e.g. down tilt hair 52 vs 42, victory face 101 vs 41)"""
+        R=ref if R is None else R; out={}; L=ref_omo('main',motion,R)[1] or None
+        for pk in R:
+            if pk.lower()=='face': continue
+            n_,f_=ref_omo(pk,motion,R)
+            if not n_: continue
+            L=L or f_
+            if f_!=L:
+                t=np.linspace(0,f_-1,L)
+                rs=lambda v: np.stack([np.interp(t,np.arange(len(v)),v[:,c]) for c in range(v.shape[1])],-1)
+                def rq(q):
+                    q=np.array(q,float)
+                    for i in range(1,len(q)):
+                        if np.dot(q[i],q[i-1])<0: q[i]=-q[i]
+                    r=rs(q); return r/np.linalg.norm(r,axis=1,keepdims=True)
+                n_={h:dict(v,pos=rs(v['pos']),rot=rq(v['rot']),sca=rs(v['sca'])) for h,v in n_.items()}
+            out.update(n_)
+        return out
     report=[]
     for item in a.anims:
         path,_,mname=item.partition('=')
@@ -411,41 +510,87 @@ def main():
             b=os.path.splitext(os.path.basename(path))[0]; m=re.match(r'([a-z])(\d+)(.*)',b)
             mname=m.group(1).upper()+m.group(2)+m.group(3)[:1].upper()+m.group(3)[1:]
         conv,F=convert(path,vbn,None)
-        mk=[k for k in main if k.lower()==('%sMain%s.omo'%(prefix,mname)).lower()]
-        mode=a.skirt; note=''; do_push=mode in ('anchored','stock')
+        sm,sfm=ref_omo('main',mname); sm=sm or {}
+        mk=bool(sm)
+        tgt=set()                                          # bones this motion animates in the target .pac files
+        for pk_,(files_,_e) in pacs.items():
+            k_=[k for k in files_ if k.lower()==('%s%s%s.omo'%(prefix,pk_.capitalize(),mname)).lower()]
+            if k_: tgt.update(read_omo(files_[k_[0]])[0].keys())
+        skirt_here=any(nm.get(h,'').startswith('SWG_') and 'Skirt' in nm.get(h,'') for h in tgt)
+        mode=a.skirt; note=''; do_push=mode in ('anchored','neutral','stock')
+        sim=legs_similarity(conv,F,sm,sfm,vbn) if mk else 999.0
+        anchor_motion=mname if sim<45.0 else 'A00Wait1'   # a different move: start from the neutral standing dress
         if mode=='auto':
-            sm,sfm=read_omo(main[mk[0]]) if mk else ({},0)
             ok,dev=legs_match(conv,F,sm,sfm,vbn) if mk else (False,None)
-            # same move (legs match): Smash 4's skirt as is; same length but new legs: Smash 4's skirt timing + push-out;
-            # different length: Ultimate's sway on Smash 4's skirt shape + push-out
-            mode='stock' if (ok or (mk and F==sfm)) else 'anchored'; do_push=not ok
-            note=' (legs %s stock%s)'%('match' if ok else 'differ from', '' if dev is None else ', %.1f deg'%dev)
-        report.append('%s: skirt = %s%s'%(mname,mode,note))
+            # same move (legs match): Smash 4's skirt as is; same length and similar legs: Smash 4's skirt timing + push-out;
+            # otherwise: Ultimate's sway on Smash 4's skirt shape (this move's, or the neutral dress) + push-out
+            mode='stock' if (ok or (mk and F==sfm and sim<45.0)) else 'anchored'; do_push=not ok
+            note=' (legs %s stock%s; %.0f deg from Peach\'s move)'%('match' if ok else 'differ from', '' if dev is None else ', %.1f deg'%dev, sim)
+            if mode=='anchored':   # Ultimate simulates the skirt in game; its baked keys can snap 100+ deg in one frame
+                jump=max([qang(v['rot'][1:],v['rot'][:-1]).max() for h,v in conv.items() if v.get('rot_only') and 'Skirt' in nm.get(h,'') and F>1] or [0])
+                if jump>60: mode='neutral'; note+='; Ultimate\'s baked skirt jumps %.0f deg in one frame, so the dress is held still and only pushed out by the legs'%jump
+        if mode in ('anchored','neutral') and anchor_motion!=mname: note+=' - different move, skirt starts from the neutral dress (%s)'%anchor_motion
+        anchor=ref_motion(anchor_motion if mode in ('anchored','neutral') else mname)   # reference skirt the converted one is built on
+        sk0=[b['id'] for b in vbn if b['name']=='SWG_FSkirt0__swing']
+        if skirt_here and sk0 and sk0[0] not in anchor:
+            # the reference has no dress for this motion (victory poses: Smash 4's bodyresult has only main + face):
+            # borrow the standing dress (A00Wait1) from the fighter's body folder next to it
+            for d in [os.path.join(os.path.dirname(os.path.normpath(x)),'body') for x in (rdir,a.pacs)]:
+                if not os.path.isfile(os.path.join(d,'main.pac')): continue
+                R={f[:-4]:read_pac(os.path.join(d,f))[0] for f in sorted(os.listdir(d)) if f.endswith('.pac')}
+                alt=ref_motion('A00Wait1',R)
+                if sk0[0] in alt:
+                    if mode=='stock': mode='anchored'
+                    anchor_motion='A00Wait1'; anchor={**alt,**anchor}
+                    note+=' - no dress in the reference for this motion, using the standing dress (A00Wait1) from %s'%d; break
+        if skirt_here: report.append('%s: skirt = %s%s'%(mname,mode,note))
+        else:
+            do_push=False
+            if has_skirt(vbn): report.append('%s: no skirt file has this motion (victory poses only have main.pac and face.pac) - dress left to the game'%mname)
         pushed={}
-        if do_push and mode in ('anchored','stock') and has_skirt(vbn) and not a.no_pushout:
-            ids={b['name']:b['id'] for b in vbn}; stk={}
-            for pk,(files,E) in pacs.items():
-                key=[k for k in files if k.lower()==('%s%s%s.omo'%(prefix,pk.capitalize(),mname)).lower()]
-                if key: stk.update(read_omo(files[key[0]])[0])
+        if do_push and mode in ('anchored','neutral','stock') and has_skirt(vbn) and not a.no_pushout:
+            ids={b['name']:b['id'] for b in vbn}; stk=ref_motion(mname)
             locq={}; loct={}
             for b in vbn:
                 h=b['id']
                 if h in conv:
-                    node=swing_fix(conv[h],stk[h],F,mode) if conv[h].get('rot_only') and h in stk else conv[h]
+                    node=swing_fix(conv[h],anchor[h],F,mode) if conv[h].get('rot_only') and h in anchor else conv[h]
                     locq[b['name']]=node['rot']
                     if not conv[h].get('rot_only'): loct[b['name']]=node['pos']
             if all(n in locq for n in ['SWG_%sSkirt0__swing'%x for x in SK_STRANDS]):
-                before=_skirt_excess(vbn,locq,loct,F)[1]
-                newq,after=skirt_pushout(vbn,locq,loct,F)
-                pushed={ids[n]:q for n,q in newq.items()}
-                report.append('%s: skirt push-out: legs poked through in %d/%d frames (worst %.2f) -> %d frames (worst %.2f)'%(mname,(before>0.05).sum(),F,before.max(),(after>0.05).sum(),after.max()))
+                tol=None
+                if anchor_motion==mname and stk:   # leave the overlap Smash 4's own move already has (feet kicking into the hem)
+                    sq={b['name']:stk[b['id']]['rot'] for b in vbn if b['id'] in stk}
+                    stq={b['name']:stk[b['id']]['pos'] for b in vbn if b['id'] in stk and 'Skirt' not in b['name']}
+                    if all(n in sq for n in ('LKneeJ','LFootJ','LToeN','RKneeJ','RFootJ','RToeN')):
+                        sf_=len(next(iter(stk.values()))['rot']); need_=_skirt_excess(vbn,sq,stq,sf_)[0]; tt=np.linspace(0,sf_-1,F)
+                        tol={x:np.interp(tt,np.arange(sf_),need_[x]) for x in SK_STRANDS}
+                aq={b['name']:anchor[b['id']]['rot'] for b in vbn if b['id'] in anchor}
+                hem_cap=None
+                if all('SWG_%sSkirt%d__swing'%(x,i) in aq for x in SK_STRANDS for i in range(4)):
+                    af_=len(aq['SWG_FSkirt0__swing']); hem_cap={x:max(float(_hem_x(vbn,aq,x,af_).max())+0.5,-2.5) for x in SK_STRANDS}
+                swayed={}
+                if mode=='anchored' and hem_cap:   # Ultimate's sway can flare the hem higher than Smash 4's dress ever goes
+                    bq={b['name']:qmean(anchor[b['id']]['rot']) for b in vbn if b['id'] in anchor and 'Skirt' in b['name']}
+                    swayed,kept=limit_sway(vbn,locq,F,bq,hem_cap); locq.update(swayed)
+                    lowk=min(float(k.min()) for k in kept.values())
+                    if lowk<1: report.append('%s: skirt sway toned down where it would lift the hem too high (lowest %d%% kept)'%(mname,round(100*lowk)))
+                before=_skirt_excess(vbn,locq,loct,F)
+                before=np.max([np.maximum(before[0][x]-tol[x],0) for x in SK_STRANDS],axis=0) if tol is not None else before[1]
+                newq,after=(skirt_pushout(vbn,locq,loct,F,tol=tol,max_deg=35.0,max_rise=0.5) if mode=='stock' else
+                             skirt_pushout(vbn,locq,loct,F,tol=tol,max_deg=75.0,max_rise=1.0,below_knee=True,hem_cap=hem_cap))
+                pushed={ids[n]:q for n,q in swayed.items()}; pushed.update({ids[n]:q for n,q in newq.items()})
+                report.append('%s: skirt push-out: legs poked through in %d/%d frames (worst %.2f) -> %d frames (worst %.2f)%s'%(mname,(before>0.05).sum(),F,before.max(),(after>0.05).sum(),after.max(),' [beyond what the stock move already has]' if tol is not None else ''))
         for pk,(files,E) in pacs.items():
             key=[k for k in files if k.lower()==('%s%s%s.omo'%(prefix,pk.capitalize(),mname)).lower()]
             if not key: report.append('%s: %s.pac has no %s - skipped'%(mname,pk,mname)); continue
             stock,sf=read_omo(files[key[0]])
-            nodes=[swing_fix(conv[h],stock[h],F,mode) if conv[h].get('rot_only') else conv[h] for h in stock if h in conv]
+            if pk.lower()=='face' or not any(h in conv for h in stock):   # face expressions aren't ported; keep Smash 4's own
+                report.append('%s: %s.pac %s left as is (%s)'%(mname,pk,key[0],'face expressions keep Smash 4\'s own' if pk.lower()=='face' else 'none of its bones are in the animation')); continue
+            nodes=[swing_fix(conv[h],anchor.get(h,stock[h]),F,mode) if conv[h].get('rot_only') else conv[h] for h in stock if h in conv]
             nodes=[dict(n,rot=pushed[n['id']]) if n['id'] in pushed else n for n in nodes]
-            if mode=='stock' and F!=sf: raise SystemExit('--skirt stock needs the same frame count as the stock motion (%s: %d vs %d)'%(mname,F,sf))
+            if mode=='stock' and any(len(n['rot'])!=F for n in nodes):
+                raise SystemExit('--skirt stock needs the same frame count as the stock motion (%s: %d vs %d in %s.pac); use --skirt anchored'%(mname,F,sf,pk))
             missing=[h for h in stock if h not in conv]
             # bones the stock .omo animates but Ultimate doesn't have: keep the stock motion, stretched to the new length
             t=np.linspace(0,sf-1,F)
