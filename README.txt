@@ -1,6 +1,6 @@
 Ult2S4 - port Smash Ultimate animations to Smash 4 (Wii U)
 ==========================================================
-The reverse of JoshuaSawagi's S4-Anims-to-Ult. Converts Ultimate animations exported from StudioSB as
+The reverse of jobrien97's S4-Anims-to-Ult. Converts Ultimate animations exported from StudioSB as
 Maya .anim files into Smash 4 .omo animations and writes them into the fighter's motion .pac files.
 
 FILES
